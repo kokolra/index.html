@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Manga Wave Survivor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        body {
+            background-color: #12131a;
+            overflow: hidden;
+            touch-action: none;
+            font-family: 'Arial Black', Impact, sans-serif;
+        }
+        #gameCanvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        /* UI 레이어 */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        .hud-bar {
+            position: absolute;
+            top: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            width: 85%;
+            max-width: 400px;
+        }
+        .bar-container {
+            width: 100%;
+            height: 14px;
+            background: #2b2b36;
+            border: 2px solid #000;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 2px 2px 0px #000;
+        }
+        #hp-fill {
+            width: 100%;
+            height: 100%;
+            background: #ff4757;
+            transition: width 0.1s;
+        }
+        #exp-fill {
+            width: 0%;
+            height: 100%;
+            background: #2ed573;
+            transition: width 0.1s;
+        }
+        .stats-text {
+            color: #fff;
+            font-size: 15px;
+            font-weight: 900;
+            text-shadow: 2px 2px 0 #000, -1px -1px 0 #000;
+            letter-spacing: 1px;
+        }
+        /* 필살기 버튼 */
+        #skill-btn {
+            position: absolute;
+            bottom: 35px;
+            right: 25px;
+            width: 75px;
+            height: 75px;
+            border-radius: 50%;
+            background: radial-gradient(circle, #ffa502, #ff4757);
+            border: 4px solid #fff;
+            box-shadow: 0 0 15px #ff4757, 3px 3px 0px #000;
+            color: #fff;
+            font-weight: 900;
+            font-size: 15px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            pointer-events: auto;
+        }
+        #skill-btn:active {
+            transform: scale(0.92);
+        }
+        #skill-btn.disabled {
+            filter: grayscale(1);
+            opacity: 0.6;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud-bar">
+            <div class="stats-text" id="wave-text">WAVE 1 | LV.1 (00:00)</div>
+            <div class="bar-container"><div id="hp-fill"></div></div>
+            <div class="bar-container" style="height: 8px;"><div id="exp-fill"></div></div>
+        </div>
+        <div id="skill-btn">BURST!</div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let width = canvas.width = window.innerWidth;
+let height = canvas.height = window.innerHeight;
+
+window.addEventListener('resize', () => {
+    width = canvas.width = window.innerWidth;
+    height = canvas.height = window.innerHeight;
+});
+
+// 게임 변수
+let wave = 1;
+let gameTime = 0;
+let shakeAmount = 0;
+let cutInTimer = 0;
+
+// 조이스틱 상태
+let touchStartPos = null;
+let touchCurrentPos = null;
+let moveVector = { x: 0, y: 0 };
+
+// 플레이어 설정
+const player = {
+    x: width / 2,
+    y: height / 2,
+    radius: 18,
+    speed: 3.6,
+    maxHp: 100,
+    hp: 100,
+    level: 1,
+    exp: 0,
+    maxExp: 10,
+    attackCooldown: 0,
+    skillCooldown: 0,
+    maxSkillCooldown: 240
+};
+
+const enemies = [];
+const bullets = [];
+const comicTexts = [];
+const particles = [];
+
+// 터치 입력 (화면 왼쪽: 조이스틱)
+window.addEventListener('touchstart', (e) => {
+    for (let t of e.changedTouches) {
+        if (t.clientX < width * 0.7 && !touchStartPos) {
+            touchStartPos = { x: t.clientX, y: t.clientY };
+            touchCurrentPos = { x: t.clientX, y: t.clientY };
+        }
+    }
+});
+
+window.addEventListener('touchmove', (e) => {
+    for (let t of e.changedTouches) {
+        if (touchStartPos) {
+            touchCurrentPos = { x: t.clientX, y: t.clientY };
+            let dx = touchCurrentPos.x - touchStartPos.x;
+            let dy = touchCurrentPos.y - touchStartPos.y;
+            let dist = Math.hypot(dx, dy);
+            let maxDist = 50;
+            if (dist > maxDist) {
+                dx = (dx / dist) * maxDist;
+                dy = (dy / dist) * maxDist;
+            }
+            moveVector = { x: dx / maxDist, y: dy / maxDist };
+        }
+    }
+});
+
+const endTouch = () => {
+    touchStartPos = null;
+    touchCurrentPos = null;
+    moveVector = { x: 0, y: 0 };
+};
+window.addEventListener('touchend', endTouch);
+window.addEventListener('touchcancel', endTouch);
+
+// 필살기 터치
+const skillBtn = document.getElementById('skill-btn');
+skillBtn.addEventListener('touchstart', (e) => {
+    e.stopPropagation();
+    triggerUltimate();
+});
+
+function triggerUltimate() {
+    if (player.skillCooldown > 0) return;
+    player.skillCooldown = player.maxSkillCooldown;
+    cutInTimer = 35;
+    shakeAmount = 25;
+
+    comicTexts.push({
+        text: "⚡METEOR SLASH!⚡",
+        x: width / 2,
+        y: height / 2 - 60,
+        color: "#ffa502",
+        scale: 2.2,
+        life: 50
+    });
+
+    enemies.forEach(en => {
+        en.hp -= 200;
+        createImpact(en.x, en.y, "#ffa502", 14);
+    });
+}
+
+function spawnComicText(text, x, y, color = "#ff4757") {
+    comicTexts.push({
+        text: text,
+        x: x + (Math.random() - 0.5) * 20,
+        y: y - 15,
+        color: color,
+        scale: 1.0,
+        life: 25
+    });
+}
+
+function createImpact(x, y, color, count = 8) {
+    for (let i = 0; i < count; i++) {
+        let angle = Math.random() * Math.PI * 2;
+        let speed = Math.random() * 4 + 2;
+        particles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            radius: Math.random() * 4 + 2,
+            color: color,
+            life: 20
+        });
+    }
+}
+
+// 적 생성
+let spawnInterval = 60;
+let spawnTimer = 0;
+
+function spawnEnemy() {
+    let side = Math.floor(Math.random() * 4);
+    let x, y;
+    if (side === 0) { x = Math.random() * width; y = -30; }
+    else if (side === 1) { x = width + 30; y = Math.random() * height; }
+    else if (side === 2) { x = Math.random() * width; y = height + 30; }
+    else { x = -30; y = Math.random() * height; }
+
+    const isElite = Math.random() < 0.15;
+    enemies.push({
+        x: x,
+        y: y,
+        radius: isElite ? 22 : 14,
+        speed: isElite ? 1.2 : 1.8 + Math.random() * 0.4,
+        hp: isElite ? 120 * (1 + wave * 0.2) : 30 * (1 + wave * 0.15),
+        maxHp: isElite ? 120 : 30,
+        color: isElite ? '#8854d0' : '#eb3b5a',
+        isElite: isElite
+    });
+}
+
+function update() {
+    gameTime++;
+    if (shakeAmount > 0) shakeAmount *= 0.9;
+    if (cutInTimer > 0) cutInTimer--;
+
+    // 웨이브 증가 (15초마다)
+    if (gameTime % 900 === 0) {
+        wave++;
+        spawnInterval = Math.max(20, 60 - wave * 5);
+        spawnComicText(`WAVE ${wave}!`, width / 2, height / 2 - 100, "#2ed573");
+    }
+
+    spawnTimer++;
+    if (spawnTimer >= spawnInterval) {
+        spawnEnemy();
+        spawnTimer = 0;
+    }
+
+    // 이동
+    player.x += moveVector.x * player.speed;
+    player.y += moveVector.y * player.speed;
+    player.x = Math.max(player.radius, Math.min(width - player.radius, player.x));
+    player.y = Math.max(player.radius, Math.min(height - player.radius, player.y));
+
+    // 스킬 쿨타임
+    if (player.skillCooldown > 0) {
+        player.skillCooldown--;
+        skillBtn.classList.add('disabled');
+        skillBtn.innerText = Math.ceil(player.skillCooldown / 60) + 's';
+    } else {
+        skillBtn.classList.remove('disabled');
+        skillBtn.innerText = 'BURST!';
+    }
+
+    // 자동 공격 (검기)
+    player.attackCooldown--;
+    if (player.attackCooldown <= 0 && enemies.length > 0) {
+        let nearest = null;
+        let minDist = Infinity;
+        enemies.forEach(en => {
+            let d = Math.hypot(en.x - player.x, en.y - player.y);
+            if (d < minDist) {
+                minDist = d;
+                nearest = en;
+            }
+        });
+
+        if (nearest && minDist < 360) {
+            let angle = Math.atan2(nearest.y - player.y, nearest.x - player.x);
+            bullets.push({
+                x: player.x,
+                y: player.y,
+                vx: Math.cos(angle) * 8.5,
+                vy: Math.sin(angle) * 8.5,
+                radius: 12,
+                angle: angle,
+                damage: 35,
+                pierce: 1
+            });
+            player.attackCooldown = 22;
+        }
+    }
+
+    // 투사체 처리
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        let b = bullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+
+        for (let j = enemies.length - 1; j >= 0; j--) {
+            let en = enemies[j];
+            if (Math.hypot(en.x - b.x, en.y - b.y) < en.radius + b.radius) {
+                en.hp -= b.damage;
+                shakeAmount = 4;
+                createImpact(b.x, b.y, "#00d2d3", 6);
+                spawnComicText(Math.random() < 0.3 ? "CRIT!" : "SLASH!", en.x, en.y, "#00d2d3");
+                b.pierce--;
+                if (b.pierce <= 0) {
+                    bullets.splice(i, 1);
+                    break;
+                }
+            }
+        }
+
+        if (b.x < 0 || b.x > width || b.y < 0 || b.y > height) {
+            bullets.splice(i, 1);
+        }
+    }
+
+    // 적 추적 및 충돌
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        let en = enemies[i];
+        let angle = Math.atan2(player.y - en.y, player.x - en.x);
+        en.x += Math.cos(angle) * en.speed;
+        en.y += Math.sin(angle) * en.speed;
+
+        if (Math.hypot(player.x - en.x, player.y - en.y) < player.radius + en.radius) {
+            player.hp -= 0.5;
+            shakeAmount = 6;
+            document.getElementById('hp-fill').style.width = `${Math.max(0, (player.hp / player.maxHp) * 100)}%`;
+            if (player.hp <= 0) {
+                alert(`GAME OVER!\n도달 웨이브: ${wave}\n생존 시간: ${Math.floor(gameTime / 60)}초`);
+                location.reload();
+                return;
+            }
+        }
+
+        if (en.hp <= 0) {
+            createImpact(en.x, en.y, en.color, 12);
+            spawnComicText("KO!", en.x, en.y, "#ffa502");
+            player.exp += en.isElite ? 8 : 2;
+
+            if (player.exp >= player.maxExp) {
+                player.exp = 0;
+                player.level++;
+                player.maxExp = Math.floor(player.maxExp * 1.4);
+                player.hp = Math.min(player.maxHp, player.hp + 25);
+                spawnComicText("★ LEVEL UP! ★", player.x, player.y - 40, "#2ed573");
+                document.getElementById('hp-fill').style.width = `${(player.hp / player.maxHp) * 100}%`;
+            }
+            document.getElementById('exp-fill').style.width = `${(player.exp / player.maxExp) * 100}%`;
+            enemies.splice(i, 1);
+        }
+    }
+
+    // 파티클 & 텍스트
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+
+    for (let i = comicTexts.length - 1; i >= 0; i--) {
+        let ct = comicTexts[i];
+        ct.y -= 0.8;
+        ct.scale += 0.02;
+        ct.life--;
+        if (ct.life <= 0) comicTexts.splice(i, 1);
+    }
+
+    let sec = Math.floor(gameTime / 60) % 60;
+    let min = Math.floor(gameTime / 3600);
+    document.getElementById('wave-text').innerText = 
+        `WAVE ${wave} | LV.${player.level} (${min < 10 ? '0' : ''}${min}:${sec < 10 ? '0' : ''}${sec})`;
+}
+
+function render() {
+    ctx.save();
+
+    if (shakeAmount > 0.5) {
+        ctx.translate((Math.random() - 0.5) * shakeAmount, (Math.random() - 0.5) * shakeAmount);
+    }
+
+    // 배경
+    ctx.fillStyle = '#1e1f29';
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+    ctx.lineWidth = 1;
+    let gridSize = 45;
+    for (let x = 0; x < width; x += gridSize) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+    }
+    for (let y = 0; y < height; y += gridSize) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+    }
+
+    // 검기 투사체
+    bullets.forEach(b => {
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.rotate(b.angle);
+        ctx.fillStyle = '#00d2d3';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, b.radius, Math.PI * 0.6, Math.PI * 1.4);
+        ctx.quadraticCurveTo(5, 0, -5, -b.radius * 0.8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+    });
+
+    // 적
+    enemies.forEach(en => {
+        ctx.save();
+        ctx.translate(en.x, en.y);
+        ctx.fillStyle = en.color;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 3.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, en.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(-6, -4, 4, 4);
+        ctx.fillRect(2, -4, 4, 4);
+        ctx.restore();
+    });
+
+    // 플레이어
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    ctx.fillStyle = '#54a0ff';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, player.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#ff9f43';
+    ctx.beginPath();
+    ctx.moveTo(-player.radius, 0);
+    ctx.lineTo(-player.radius - 14, -8);
+    ctx.lineTo(-player.radius - 8, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+
+    // 파티클
+    particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.radius, p.radius);
+    });
+
+    // 만화풍 텍스트
+    comicTexts.forEach(ct => {
+        ctx.save();
+        ctx.translate(ct.x, ct.y);
+        ctx.scale(ct.scale, ct.scale);
+        ctx.font = '900 20px "Arial Black", Impact, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 5;
+        ctx.strokeText(ct.text, 0, 0);
+        ctx.fillStyle = ct.color;
+        ctx.fillText(ct.text, 0, 0);
+        ctx.restore();
+    });
+
+    // 가상 조이스틱
+    if (touchStartPos && touchCurrentPos) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(touchStartPos.x, touchStartPos.y, 45, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(84, 160, 255, 0.7)';
+        ctx.beginPath();
+        ctx.arc(touchCurrentPos.x, touchCurrentPos.y, 22, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // 필살기 컷인
+    if (cutInTimer > 0) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 40; i++) {
+            let angle = (i / 40) * Math.PI * 2;
+            let outerX = width / 2 + Math.cos(angle) * (width * 0.8);
+            let outerY = height / 2 + Math.sin(angle) * (height * 0.8);
+            let innerX = width / 2 + Math.cos(angle) * 70;
+            let innerY = height / 2 + Math.sin(angle) * 70;
+            ctx.beginPath();
+            ctx.moveTo(outerX, outerY);
+            ctx.lineTo(innerX, innerY);
+            ctx.stroke();
+        }
+    }
+
+    ctx.restore();
+}
+
+function loop() {
+    update();
+    render();
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
